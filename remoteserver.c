@@ -18,6 +18,8 @@
 #include <openssl/err.h>
 #include <openssl/objects.h>
 
+#define SECURE
+
 #define TYPE_NORMAL 1
 #define TYPE_WRONG 2
 
@@ -51,7 +53,7 @@ void print_hex(char * buff, int len)
 {
         int i;
         for (i=0;i<len;i++)
-		 printf("%02x",(unsigned char *)&buff[i]);
+		 printf("%02x",(unsigned char)buff[i]);
 
         printf("\n");
 }
@@ -141,13 +143,13 @@ void * handle_localserver_request_thread(void *arg)
 	char *client_header = (char *)malloc((hello_len+len2)*sizeof(char));
 	int len_header=recv(sock_localserver, client_header, hello_len+len2, 0);
 	DEBUG("***enter establish3");
-	//pasre server_hello
+	//pasre client_hello
 	//RSA *rsa_client = (RSA *)malloc(sizeof(*rsa_client));
 	RSA *rsa_client = RSA_new();
-	int type = atoi(&client_header[0]);
+	int type = atoi(&client_header[0])/10; //first two bytes are numbers, the first number is type, second authentication algorithm
 	int client_auth = atoi(&client_header[1]);
 	char *str_n = (char *)malloc(256*sizeof(char));
-	strncpy(str_n, &client_header[2], 256);
+	memcpy(str_n, &client_header[2], 256);
 //	str_n[257] = '\0';
 //	printf("str_n is: %s", str_n);
 	DEBUG("***enter establish4: ");
@@ -158,7 +160,7 @@ void * handle_localserver_request_thread(void *arg)
 	rsa_client->n = tmp_n;
 	DEBUG("***enter establish5");
 	char *str_e = (char *)malloc(2*sizeof(char));
-	strncpy(str_e, &client_header[258], 2);
+	memcpy(str_e, &client_header[258], 2);
 	BIGNUM *tmp_e;
 	tmp_e = BN_new();
 	BN_hex2bn(&tmp_e, str_e);
@@ -169,22 +171,27 @@ void * handle_localserver_request_thread(void *arg)
 	//verify
 	printf("%d = 260 + %d \n", len_header, len2);
 	char *client_hello = (char *)malloc(hello_len*sizeof(char));
-	strncpy(client_hello, &client_header[0], 260);
+	memcpy(client_hello, &client_header[0], 260);
 	DEBUG("***enter establish6");
 	char *signature=(char *)malloc(len2*sizeof(char));
-	strncpy(signature, &client_header[260], len2);
+	memcpy(signature, &client_header[260], len2);
 	DEBUG("***enter establish7");
 printf("****signature : \n");
         print_hex(signature, len2);
         printf("****client_header is : \n");
         print_hex(&client_header[260], len2);
-	if(RSA_verify(NID_md5, client_hello,sizeof(client_hello),signature,len2,rsa_client))
+	if(RSA_verify(NID_md5, (unsigned char *)client_hello, hello_len, (unsigned char *)signature, len2, rsa_client))
 	{
 		type = TYPE_NORMAL;
 		printf("Signature verified ok\n");
 	}
 	else
 	{
+		unsigned long code;
+		char buf[1024];
+		code=ERR_get_error();		
+		ERR_error_string(code, buf);
+		printf("Verify Error: %s\n", buf);
 		type = TYPE_WRONG;
 		printf("Signature verified failed\n");
 	}
@@ -196,14 +203,28 @@ printf("****signature : \n");
 	DEBUG("***enter establish8");
 	//construct server_hello
 	char *server_hello = (char *)malloc(hello_len*sizeof(char));
-	sprintf(server_hello, "%d%d%s%s", type, AUTHEN_RSA, BN_bn2hex(rsa->n), BN_bn2hex(rsa->e));
+	//sprintf(server_hello, "%d%d%s%s", type, AUTHEN_RSA, BN_bn2hex(rsa->n), BN_bn2hex(rsa->e));
+	sprintf(server_hello, "%d%d", TYPE_NORMAL, AUTHEN_RSA);
+	strcat(server_hello, BN_bn2hex(rsa->n));
+	strcat(server_hello, BN_bn2hex(rsa->e));
 	//sign
-	DEBUG("***len2 = %d", len2);
-	signature = (char *)malloc(129*sizeof(char));
-	RSA_sign(NID_md5,(unsigned char *)server_hello,sizeof(server_hello),(unsigned char *)signature,&len2,rsa);
+	printf("***len2 = %d, sizeof(server_hello) = %d \n", len2, sizeof(server_hello));
+	//if(signature != NULL)
+	//	free(signature);
+	//signature = (char *)malloc(128*sizeof(char));
+	if(RSA_sign(NID_md5, (unsigned char *)server_hello, hello_len, (unsigned char *)signature, &len2, rsa) == 0)
+	{
+		unsigned long code;
+		char buf[1024];
+		code=ERR_get_error();		
+		ERR_error_string(code, buf);
+		printf("Sign Error: %s\n", buf);
+	}
 	//send client_hello
 	char *server_header = (char *)malloc((hello_len+len2)*sizeof(char));
-	sprintf(server_header, "%s%s", server_hello, signature);
+	//sprintf(server_header, "%s%s", server_hello, signature);
+	memcpy(server_header, server_hello, hello_len);
+	memcpy(&server_header[hello_len], signature, len2);
 	send(sock_localserver, server_header, hello_len+len2, 0);
 	printf("****signature : \n");
 	print_hex(signature, len2);
@@ -214,20 +235,24 @@ printf("****signature : \n");
 	//free(signature);
 	//free(server_header);
 	DEBUG("***enter establish9");
-//	if(type == TYPE_WRONG)
+	if(type == TYPE_WRONG)
+	{
+		printf("client not trusted! \n");
 //		return (void *)0;
+	}
+
 
 		printf("request: \n");
 		int i = 0;
-		char buf[4096];
-		while((nRevd=recv(sock_localserver, buf, 4096, 0)) == 4096)
+		char buf[1024];
+		while((nRevd=recv(sock_localserver, buf, 1024, 0)) == 1024)
 		{
 			i++;
 	//		printf("%s", buf);
 		}
 	//	buf[nRevd] = '\0';
 #ifdef SECURE
-		char buf_decry[4096];
+		char buf_decry[1024];
 		RSA_private_decrypt(nRevd,(unsigned char *)buf,(unsigned char *)buf_decry,rsa,RSA_PKCS1_PADDING);
 		printf("%s \n", buf_decry);
 		printf("request buf end: i=%d, nRevd = %d \n", i, nRevd);
@@ -240,6 +265,7 @@ printf("****signature : \n");
 		//http_request(buf, response_header, response_buf, &response_len);
 		http_request(buf_decry, sock_localserver);
 #else
+		printf("request buf end: i=%d, nRevd = %d \n", i, nRevd);
 		http_request(buf, sock_localserver);
 #endif
 	//	printf("Response: %s \n", response_header);
@@ -263,7 +289,7 @@ printf("****signature : \n");
 
 int dns_query(const char* url, struct ip_t *ip)
 {
-    struct addrinfo *result = NULL;
+    struct addrinfo *result;//(struct addrinfo *)malloc(sizeof(*result));
     int ret;
     struct addrinfo addr;
 

@@ -22,6 +22,8 @@
 #include <openssl/objects.h>
 #pragma comment( lib, "libeay32.lib")
 
+#define SECURE
+
 #define REMOTESERVER "10.0.1.33" //202.112.50.94
 #define LOCALPORT 6000
 //#define REMOTEPORT 6002 //not used now
@@ -142,7 +144,7 @@ void print_hex(char * buff, int len)
 {
         int i;
         for (i=0;i<len;i++)
-		 printf("%02x",(unsigned char *)&buff[i]);
+		 printf("%02x",(unsigned char)buff[i]);
 
         printf("\n");
 }
@@ -208,15 +210,23 @@ int http_request(char *request_buf, char *response_buf, SOCKET sockfd_request)
 	//sign
 	unsigned int len2=RSA_size(rsa);
 	char *signature=(char *)malloc(len2*sizeof(char));
-	RSA_sign(NID_md5,(unsigned char *)client_hello,sizeof(client_hello),(unsigned char *)signature,&len2,rsa);
+retry:
+	if(RSA_sign(NID_md5,(unsigned char *)client_hello,hello_len,(unsigned char *)signature,&len2,rsa) == 0)
+	{
+		unsigned long  code;
+		char buff[1024];
+		code=ERR_get_error();
+		ERR_error_string(code, buff);
+		printf("Error:%s\n",buff);
+	}
 	printf("***http_request(): signature is: \n");
 	print_hex(signature, len2);
 	//printf("%s", signature);
 	//send client_hello
 	char *client_header = (char *)malloc((hello_len+len2)*sizeof(char));
 	//sprintf(client_header, "%s%s", client_hello, signature);
-	strncpy(client_header, client_hello, hello_len);
-	strncpy(&client_header[260], signature, len2);
+	memcpy(client_header, client_hello, hello_len);
+	memcpy(&client_header[260], signature, len2);
 	//strcat(client_header, signature);
 	send(httpsockfd, client_header, hello_len+len2, 0);
 	//printf("***http_request(): client_header client_hello is: \n");
@@ -237,31 +247,42 @@ int http_request(char *request_buf, char *response_buf, SOCKET sockfd_request)
 	print_hex(&server_header[260], len2);
 	//pasre server_hello
 	RSA *rsa_server = RSA_new();
-	int type = atoi(&server_header[0]);
+	int type = atoi(&server_header[0])/10;
+	if(type == TYPE_WRONG)
+		goto retry;
 	int server_auth = atoi(&server_header[1]);
 	char *str_n = (char *)malloc(256*sizeof(char));
 	strncpy(str_n, &server_header[2], 256);
-	BN_hex2bn(&rsa_server->n, str_n);
+	BIGNUM *tmp_n = BN_new();
+	BN_hex2bn(&tmp_n, str_n);
+	rsa_server->n = tmp_n;
 	char *str_e = (char *)malloc(2*sizeof(char));
 	strncpy(str_e, &server_header[258], 2);
-	BN_hex2bn(&rsa_server->e, str_e);
+	BIGNUM *tmp_e = BN_new();
+	BN_hex2bn(&tmp_e, str_e);
+	rsa_server->e = tmp_e;
 	printf("type = %d, server_auth = %d \n", type, server_auth);
 	printf("N(%d bytes, %d):%s\n",BN_num_bytes(rsa->n), strlen(BN_bn2hex(rsa->n)), BN_bn2hex(rsa->n));
 	printf("e(%d bytes):%s\n",BN_num_bytes(rsa->e), BN_bn2hex(rsa->e));
 	//verify
 	char *server_hello = (char *)malloc(hello_len*sizeof(char));
-	strncpy(server_hello, &server_header[0], 260);
+	memcpy(server_hello, &server_header[0], 260);
 	//char *signature=(char *)malloc(len2);
-	strncpy(signature, &server_header[260], len2);
+	memcpy(signature, &server_header[260], len2);
 	printf("***http_request(): signature is: \n");
 	print_hex(signature, len2);
-	if(RSA_verify(NID_md5,(unsigned char *)server_hello,sizeof(server_hello),(unsigned char *)signature,len2,rsa_server))
+	if(RSA_verify(NID_md5,(unsigned char *)server_hello, hello_len,(unsigned char *)signature,len2,rsa_server))
 	{
 		type = TYPE_NORMAL;
 		printf("Signature verified ok\n");
 	}
 	else
 	{
+		unsigned long  code;
+		char buff[1024];
+		code=ERR_get_error();
+		ERR_error_string(code, buff);
+		printf("Error:%s\n",buff);
 		type = TYPE_WRONG;
 		printf("Signature verified failed\n");
 	}
@@ -269,11 +290,17 @@ int http_request(char *request_buf, char *response_buf, SOCKET sockfd_request)
 	free(str_n);
 	free(str_e);
 	free(rsa_server);
+	if(type == TYPE_WRONG)
+	{
+		//for later provement
+		printf("Server cannot be trusted!");
+//		return -1;
+	}
 
 
 	//next, send the request
 #ifdef SECURE
-	request_buf_encry = (char *)calloc(4096, sizeof(char));
+	request_buf_encry = (char *)calloc(1024, sizeof(char));
 	if(request_buf_encry == NULL)
 		printf("malloc error! \n");
 	RSA_public_encrypt(sizeof(request_buf),(unsigned char *)request_buf,(unsigned char *)request_buf_encry,rsa_server,RSA_PKCS1_PADDING);
