@@ -34,6 +34,7 @@
 #define DEBUG(s) {}
 #endif
 
+RSA *rsa_client;
 pthread_t thid;
 
 struct sock_arg
@@ -121,10 +122,6 @@ void * handle_localserver_request_thread(void *arg)
     int sock_localserver = sa->sock;
 	int nRevd;
 
-	while(1)
-	{
-            if(sock_localserver == 0)
-                break;
 	
 	//establish stage
 	DEBUG("***enter establish");
@@ -145,7 +142,7 @@ void * handle_localserver_request_thread(void *arg)
 	DEBUG("***enter establish3");
 	//pasre client_hello
 	//RSA *rsa_client = (RSA *)malloc(sizeof(*rsa_client));
-	RSA *rsa_client = RSA_new();
+	rsa_client = RSA_new();
 	int type = atoi(&client_header[0])/10; //first two bytes are numbers, the first number is type, second authentication algorithm
 	int client_auth = atoi(&client_header[1]);
 	char *str_n = (char *)malloc(256*sizeof(char));
@@ -168,6 +165,30 @@ void * handle_localserver_request_thread(void *arg)
 	printf("type = %d, server_auth = %d\n", type, client_auth);
 	printf("N(%d bytes, %d):%s\n",BN_num_bytes(rsa_client->n), strlen(BN_bn2hex(rsa_client->n)), BN_bn2hex(rsa_client->n));
 	printf("e(%d bytes):%s\n",BN_num_bytes(rsa_client->e), BN_bn2hex(rsa_client->e));
+#ifdef MD5
+	//verify
+	char *client_hello = (char *)malloc(hello_len*sizeof(char));
+	memcpy(client_hello, &client_header[0], 260);
+	memcpy(signature, &client_header[260], md_len);
+	printf("***http_request(): signature is: \n");
+	print_hex(signature, md_len);
+	char *signature2 = (char *)malloc(md_len*sizeof(char));
+
+	EVP_MD_CTX mdctx;
+	const EVP_MD *md;
+	unsigned char signature[EVP_MAX_MD_SIZE];
+	int md_len, i;
+	md = EVP_get_digestbyname("MD5");
+	
+	EVP_MD_CTX_init(&mdctx);
+	EVP_DigestInit_ex(&mdctx, md, NULL);
+	EVP_DigestUpdate(&mdctx, client_hello, strlen(client_hello));
+	EVP_DigestFinal_ex(&mdctx, signature2, &md_len2);
+	EVP_MD_CTX_cleanup(&mdctx);
+	
+	if(strcmp(signature, signature2) == 0)
+			printf("verification ok! \n");
+#else
 	//verify
 	printf("%d = 260 + %d \n", len_header, len2);
 	char *client_hello = (char *)malloc(hello_len*sizeof(char));
@@ -180,7 +201,10 @@ printf("****signature : \n");
         print_hex(signature, len2);
         printf("****client_header is : \n");
         print_hex(&client_header[260], len2);
-	if(RSA_verify(NID_md5, (unsigned char *)client_hello, hello_len, (unsigned char *)signature, len2, rsa_client))
+	char *tmpstr = (char *)malloc(sizeof(client_hello)+1);
+	memcpy(tmpstr, client_hello, sizeof(client_hello));
+	tmpstr[sizeof(client_hello)] = '\0';
+	if(RSA_verify(NID_md5, (unsigned char *)tmpstr, sizeof(client_hello), (unsigned char *)signature, len2, rsa_client))
 	{
 		type = TYPE_NORMAL;
 		printf("Signature verified ok\n");
@@ -195,12 +219,33 @@ printf("****signature : \n");
 		type = TYPE_WRONG;
 		printf("Signature verified failed\n");
 	}
-	free(client_hello);
+/*	free(client_hello);
 	free(client_header);
 	free(str_n);
 	free(str_e);
 	free(rsa_client);
-	DEBUG("***enter establish8");
+*/	DEBUG("***enter establish8");
+#endif
+
+#ifdef MD5
+	//construct server_hello
+	char *server_hello = (char *)malloc(hello_len*sizeof(char));
+	sprintf(server_hello, "%d%d", TYPE_NORMAL, AUTHEN_MD5);
+	strcat(server_hello, BN_bn2hex(rsa->n));
+	strcat(server_hello, BN_bn2hex(rsa->e));
+	
+	EVP_MD_CTX_init(&mdctx);
+	EVP_DigestInit_ex(&mdctx, md, NULL);
+	EVP_DigestUpdate(&mdctx, server_hello, strlen(server_hello));
+	EVP_DigestFinal_ex(&mdctx, signature, &md_len);
+	EVP_MD_CTX_cleanup(&mdctx);
+
+	char *server_header = (char *)malloc((hello_len+md_len)*sizeof(char));
+	memcpy(server_header, server_hello, hello_len);
+	memcpy(&server_header[hello_len], signature, md_len);
+	send(sock_localserver, server_header, hello_len+md_len, 0);
+
+#else
 	//construct server_hello
 	char *server_hello = (char *)malloc(hello_len*sizeof(char));
 	//sprintf(server_hello, "%d%d%s%s", type, AUTHEN_RSA, BN_bn2hex(rsa->n), BN_bn2hex(rsa->e));
@@ -212,7 +257,10 @@ printf("****signature : \n");
 	//if(signature != NULL)
 	//	free(signature);
 	//signature = (char *)malloc(128*sizeof(char));
-	if(RSA_sign(NID_md5, (unsigned char *)server_hello, hello_len, (unsigned char *)signature, &len2, rsa) == 0)
+	//tmpstr = (char *)malloc(sizeof(server_hello)+1);
+	memcpy(tmpstr, server_hello, sizeof(server_hello));
+	tmpstr[sizeof(server_hello)] = '\0';
+	if(RSA_sign(NID_md5, (unsigned char *)tmpstr, sizeof(server_hello), (unsigned char *)signature, &len2, rsa) == 0)
 	{
 		unsigned long code;
 		char buf[1024];
@@ -230,7 +278,7 @@ printf("****signature : \n");
 	print_hex(signature, len2);
 	printf("****server_header is : \n");
 	print_hex(&server_header[260], len2);
-	free(rsa);
+//	free(rsa);
 	//free(server_hello);
 	//free(signature);
 	//free(server_header);
@@ -240,22 +288,31 @@ printf("****signature : \n");
 		printf("client not trusted! \n");
 //		return (void *)0;
 	}
+#endif
 
+	while(1)
+	{
+            if(sock_localserver == 0)
+                break;
 
+#ifdef SECURE
 		printf("request: \n");
 		int i = 0;
 		char buf[1024];
-		while((nRevd=recv(sock_localserver, buf, 1024, 0)) == 1024)
+		char *buf_tmp = (char *)malloc(128);
+		char *buf_decry = (char *)malloc(128);
+		while((nRevd=recv(sock_localserver, buf_tmp, 128, 0)) == 128)
 		{
 			i++;
-	//		printf("%s", buf);
+			//printf("128\n");
+			RSA_private_decrypt(nRevd,(unsigned char *)buf_tmp,(unsigned char *)buf_decry,rsa,RSA_PKCS1_PADDING);
+			printf("128: %s \n", buf_decry);
+			strncpy(&buf[(i-1)*116], buf_decry, 116);
+			send(sock_localserver, buf_tmp, nRevd, 0);
 		}
-	//	buf[nRevd] = '\0';
-#ifdef SECURE
-		char buf_decry[1024];
-		RSA_private_decrypt(nRevd,(unsigned char *)buf,(unsigned char *)buf_decry,rsa,RSA_PKCS1_PADDING);
-		printf("%s \n", buf_decry);
+		printf("%s \n", buf);
 		printf("request buf end: i=%d, nRevd = %d \n", i, nRevd);
+		free(buf_tmp);
 
 		//http request
 		//char *response_buf = (char *)malloc(4096*sizeof(char));
@@ -263,8 +320,15 @@ printf("****signature : \n");
 		//char *response_buf = NULL;
 		//int response_len;
 		//http_request(buf, response_header, response_buf, &response_len);
-		http_request(buf_decry, sock_localserver);
+		http_request(buf, sock_localserver);
 #else
+		printf("request: \n");
+		int i = 0;
+		char buf[1024];
+		while((nRevd=recv(sock_localserver, buf, 1024, 0)) == 1024)
+		{
+			i++;
+		}
 		printf("request buf end: i=%d, nRevd = %d \n", i, nRevd);
 		http_request(buf, sock_localserver);
 #endif
@@ -426,14 +490,95 @@ int http_request(char *request_buf, int localserver_sock)
 	//send request to website
 	send(httpsockfd, request_buf, strlen(request_buf), 0);
 	//printf("send: %s \n", request_buf);
-	
-/*	char *file = "index.html";
-	int fd = open(file, O_RDWR|O_CREAT);
-	if(fd < 0)
+
+#ifdef SECURE	
+	//get response header
+	int nRevd = 0;
+	int i = 0;
+	int recv_len = 0;
+	printf("http_request() revd:\n");
+	char *response_buf = (char *)malloc(1024*sizeof(char));
+	char *tmp_buf = (char *)malloc(128*sizeof(char));
+	char *buf_encry = (char *)malloc(128*sizeof(char));
+	for(i=0; i<4&&nRevd>=0; i++)
 	{
-		perror("open error! \n");
+		nRevd = recv(httpsockfd, tmp_buf, 116, 0);
+tmp_buf[116] = '\0';
+printf("1**********(%d)%s ", nRevd, tmp_buf);
+        	recv_len += nRevd;
+		memcpy(&response_buf[i*116], tmp_buf, 116);
+		//encrypt
+		RSA_public_encrypt(116, (unsigned char *)tmp_buf, (unsigned char *)buf_encry, rsa_client, RSA_PKCS1_PADDING);
+		//send	
+		send(localserver_sock, buf_encry, 128, 0);
 	}
-*/
+	i = 0;
+//	if(nRevd < 0)
+//          goto end;
+
+	//senb back to localserver
+	//send(localserver_sock, response_buf, nRevd, 0);
+
+	//get res_len
+        int res_len = get_res_len(response_buf);
+
+	//recv answer from website
+	printf("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY %d\n", res_len);
+//	if(tmp_buf != NULL)
+//		free(tmp_buf);
+//	tmp_buf = (char *)calloc(128, sizeof(char));
+cont:
+	while(nRevd == 116)
+	{
+		i++;
+		nRevd=recv(httpsockfd, tmp_buf, 116, 0);
+//printf("2**********(%d)%s ", nRevd, tmp_buf);
+//printf("2****:");
+//print_hex(tmp_buf, nRevd);
+                if(nRevd < 0)
+                    goto end;
+                recv_len += nRevd;
+
+		if(nRevd<116)
+		{
+		//The last one was sent as plaintext to signal the end
+		send(localserver_sock, tmp_buf, nRevd, 0);
+		}
+		else
+		{
+		//encrypt	
+		RSA_public_encrypt(nRevd, (unsigned char *)tmp_buf, (unsigned char *)buf_encry, rsa_client, RSA_PKCS1_PADDING);
+		//send back to localserver
+		send(localserver_sock, buf_encry, 128, 0);
+		}
+	}
+	
+	if(res_len > recv_len)
+	{
+		i++;
+		nRevd=recv(httpsockfd, tmp_buf, 116, 0);
+//printf("3**********(%d)%s ", nRevd, tmp_buf);
+//printf("3****:");
+//print_hex(tmp_buf, nRevd);
+                if(nRevd < 0)
+                    goto end;
+		recv_len += nRevd;
+
+		if(nRevd < 116)
+		{
+		send(localserver_sock, tmp_buf, nRevd, 0);
+		}
+		else
+		{
+		//encrypt
+		RSA_public_encrypt(nRevd, (unsigned char *)tmp_buf, (unsigned char *)buf_encry, rsa_client, RSA_PKCS1_PADDING);
+		//send back to localserver
+		send(localserver_sock, buf_encry, 128, 0);
+		}
+		goto cont;
+	}
+	
+#else
 	//get response header
 	int nRevd = 0;
 	int i = 0;
@@ -441,82 +586,50 @@ int http_request(char *request_buf, int localserver_sock)
 	printf("http_request() revd:\n");
 	char *response_buf = (char *)malloc(1024*sizeof(char));
 	nRevd = recv(httpsockfd, response_buf, 1024, 0);
+printf("1**********(%d)%s ", nRevd, response_buf);
 	if(nRevd < 0)
             goto end;
         recv_len += nRevd;
-//	write(fd, response_buf, nRevd);
 
 	//senb back to localserver
 	send(localserver_sock, response_buf, nRevd, 0);
 
 	//get res_len
         int res_len = get_res_len(response_buf);
-        //int res_len = 1888;
 
 	//recv answer from website
-	//res_len = (res_len+1023)/1024*1024;
 	printf("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY %d\n", res_len);
-	//char *response_buf = (char *)malloc(res_len*sizeof(char));
-	//printf("YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY\n");
-/*	if(res_len>0)
-	{
-		while(res_len > 0)
-		{
-		i++;
-		nRevd=recv(httpsockfd, response_buf, 1024, 0);
-		res_len -= nRevd;
-
-		//send back to localserver
-		send(localserver_sock, response_buf, nRevd, 0);
-	
-		}
-	
-	}
-	else
-*/	{
 cont:
-		while(nRevd == 1024)
-		{
+	while(nRevd == 1024)
+	{
 		i++;
 		nRevd=recv(httpsockfd, response_buf, 1024, 0);
+printf("2**********(%d)%s ", nRevd, response_buf);
                 if(nRevd < 0)
                     goto end;
                 recv_len += nRevd;
-//		write(fd, response_buf, nRevd);
 	
 		//send back to localserver
 		send(localserver_sock, response_buf, nRevd, 0);
-	
-//		if(nRevd < 1024)
-//			break;
-//		response_buf += nRevd;
-//		printf("%s", response_buf);
-		}
+
 	}
 	
 	if(res_len > recv_len)
 	{
 		nRevd=recv(httpsockfd, response_buf, 1024, 0);
+printf("3**********(%d)%s ", nRevd, response_buf);
                 if(nRevd < 0)
                     goto end;
 		recv_len += nRevd;
-//		write(fd, response_buf, nRevd);
 		send(localserver_sock, response_buf, nRevd, 0);
 		goto cont;
 	}
-//	if(nRevd == 1024)
-//		nRevd = 1023;
-//	response_buf[nRevd] = '\0';
-//	printf("%s \n", response_buf);
-	//*response_len = i*1024+nRevd;
-
+#endif
 end:
         printf("b9999999999999999999999999999999999\n");
 	free(response_buf);
-//	close(fd);
 	printf("http_request(): i = %d, nRevd = %d \n", i, nRevd);
-//	strcat(response_header, res_buf);
-printf("h9999999999999999999999999999999999\n");
+	printf("h9999999999999999999999999999999999\n");
 	return 0;
 }
 
