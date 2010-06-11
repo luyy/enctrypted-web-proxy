@@ -346,6 +346,7 @@ retry:
 			printf("Server cannot be trusted!");
 	//		return -1;
 		}
+
 	}
 	else
 	{

@@ -1,3 +1,13 @@
+/*
+* remoteserver.c
+*	This is the remote proxy of encrypt web proxy. It decrypts, parses the HTTP request and sends the request to web server. 
+*	When recieved answer, it encrypts the answer and sends back to lcoal server.
+*	Besides, it provides authentication.
+*
+*	Youyou Lu (luyouyou87@gmail.com)
+*	2010/06/01
+*
+*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -17,6 +27,8 @@
 #include <openssl/bn.h>
 #include <openssl/err.h>
 #include <openssl/objects.h>
+#include <openssl/md5.h>
+#include <openssl/evp.h>
 
 #define SECURE
 
